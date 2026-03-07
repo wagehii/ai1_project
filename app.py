@@ -1,40 +1,109 @@
-import streamlit as st
-import pandas as pd
-import re
-from ortools.sat.python import cp_model
+import tkinter as tk
+import random
 
-# ==========================================
-# 1. إعدادات الصفحة والواجهة (UI Setup)
-# ==========================================
-st.set_page_config(page_title="Nexus Scheduler | AI Timetabling", page_icon="🗓️", layout="wide")
+class CondensedScheduler:
+    def init(self, root):
+        self.root = root
+        self.root.title("نظام الجداول 2026 - المحاضرات المكثفة")
+        self.root.geometry("1500x850")
+        
+        self.days = ["Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
+        self.slots = ["1", "2", "3", "4"] 
+        self.sections = [f"Sec {i}" for i in range(1, 10)]
+        self.courses = ["AI", "OS", "SE", "DSP"]
+        
+        # محاضرات مكثفة (يومين فقط بدل 4)
+        self.fixed_lectures = {
+            ("Saturday", "1"): "AI (Lec)",
+            ("Saturday", "2"): "OS (Lec)", # محاضرة تانية وراها
+            ("Sunday", "1"): "SE (Lec)",
+            ("Sunday", "2"): "DSP (Lec)"  # محاضرة تانية وراها
+        }
+        
+        self.setup_ui()
 
-st.markdown("""
-    <style>
-    .main {background-color: #0e1117;}
-    h1, h2, h3 {color: #4CAF50;}
-    .stMetric {background-color: #1e2530; padding: 15px; border-radius: 10px; border-left: 5px solid #4CAF50;}
-    </style>
-""", unsafe_allow_html=True)
+    def setup_ui(self):
+        header = tk.Frame(self.root, bg="#1a1a1a", pady=15)
+        header.pack(fill="x")
+        tk.Label(header, text="جدول حاسبات (محاضرات مكثفة + فواصل سوداء + غياب كامل)", 
+                 fg="#f1c40f", bg="#1a1a1a", font=("Arial", 14, "bold")).pack()
 
-st.title("🗓️ Nexus AI Scheduler - نظام الجدولة الذكي المتقدم")
-st.caption("يعتمد على تقنيات Constraint Programming و Natural Language Processing")
+        tk.Button(self.root, text="توليد الجدول المكثف ⚡️", command=self.generate, 
+                  bg="#16a085", fg="white", font=("Arial", 11, "bold"), pady=10).pack(pady=5)
 
-# ==========================================
-# 2. البيانات الأساسية (Data Initialization)
-# ==========================================
-# استخدام بيانات واقعية تعكس بيئة تقنية (علوم حاسب/داتا ساينس)
-DAYS = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء"]
-TIMES = ["09:00 AM", "11:00 AM", "01:00 PM"]
+        # حاوية الجدول بخلفية سوداء لعمل الفواصل
+        self.container = tk.Frame(self.root, bg="black", bd=2)
+        self.container.pack(fill="both", expand=True, padx=15, pady=10)
 
-ROOMS = {
-    "مدرج الخوارزمي": {"capacity": 150},
-    "معمل داتا ساينس (A)": {"capacity": 40},
-    "معمل شبكات (B)": {"capacity": 30},
-    "قاعة سيمنار": {"capacity": 60}
-}
+    def generate(self):
+        for widget in self.container.winfo_children(): widget.destroy()
+        
+        # رسم الهيدر
+        tk.Label(self.container, text="SEC", bg="#2c3e50", fg="white", width=6).grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0,2), pady=(0,2))
+        
+        col_ptr = 1
+        for day_idx, day in enumerate(self.days):
+            # فاصل أسود عريض (5px) بين الأيام
+            tk.Label(self.container, text=day, bg="#34495e", fg="white", font=("Arial", 10, "bold")).grid(row=0, column=col_ptr, columnspan=4, sticky="nsew", padx=(0, 5 if day_idx < len(self.days)-1 else 0), pady=(0,2))
+            for s in self.slots:
+                tk.Label(self.container, text=s, bg="#ecf0f1").grid(row=1, column=col_ptr, sticky="nsew", padx=(0, 1 if int(s) < 4 else 5), pady=(0,2))
+                col_ptr += 1
 
-COURSES = {
-    "تصميم خوارزميات (Algorithms)": {"doctor": "د. أحمد", "students": 120},
+        for i, sec_name in enumerate(self.sections):
+            tk.Label(self.container, text=sec_name, bg="white", font=("Arial", 9, "bold")).grid(row=i+2, column=0, sticky="nsew", padx=(0,2), pady=(0,2))
+            
+            # تحديد يوم الغياب (تبادلي)
+            if i+1 == 8: off_day = "Monday"
+            elif i+1 == 9: off_day = "Tuesday"
+            else:
+                other_potential = ["Wednesday", "Thursday", "Monday", "Tuesday"]
+                off_day = other_potential[i % len(other_potential)]
+
+            # توزيع السكاشن العملية الـ 4
+            remaining_mats = [f"{c} (Sec)" for c in self.courses]
+            random.shuffle(remaining_mats)
+            
+            # حجز أماكن للسكاشن (بشرط مش يوم غياب ومش ميعاد محاضرة مكثفة)
+            available_slots = []
+            for d in self.days:
+                if d != off_day:
+                    for s in self.slots:
+                        if (d, s) not in self.fixed_lectures:
+                            available_slots.append((d, s))
+            
+            mat_map = {}
+            if len(available_slots) >= 4:
+                chosen = random.sample(available_slots, 4)
+                for m in remaining_mats:
+                    mat_map[chosen.pop()] = m
+
+            curr_col = 1
+            for day_idx, day in enumerate(self.days):
+                for slot_idx, slot in enumerate(self.slots):
+                    cell_text, bg, fg = "", "white", "black"
+                    
+                    # الفواصل
+                    p_x = (0, 5 if slot_idx == 3 and day_idx < len(self.days)-1 else 1)
+                    p_y = (0, 2)
+if day == off_day:
+                        bg = "#f1c40f" # إجازة صفراء
+                    elif (day, slot) in self.fixed_lectures:
+                        cell_text = self.fixed_lectures[(day, slot)]
+                        bg, fg = "#3498db", "white" # محاضرة زرقاء
+                    elif (day, slot) in mat_map:
+                        cell_text = mat_map[(day, slot)]
+
+                    tk.Label(self.container, text=cell_text, bg=bg, fg=fg, 
+                             font=("Arial", 7, "bold"), height=4).grid(row=i+2, column=curr_col, sticky="nsew", padx=p_x, pady=p_y)
+                    curr_col += 1
+
+        for r in range(len(self.sections)+2): self.container.rowconfigure(r, weight=1)
+        for c in range(len(self.days)*4 + 1): self.container.columnconfigure(c, weight=1)
+
+if name == "main":
+    root = tk.Tk()
+    app = CondensedScheduler(root)
+    root.mainloop()    "تصميم خوارزميات (Algorithms)": {"doctor": "د. أحمد", "students": 120},
     "شبكات حاسب (Networks)": {"doctor": "د. محمود", "students": 30},
     "ذكاء اصطناعي (Machine Learning)": {"doctor": "د. ملك", "students": 40},
     "برمجة منطقية (Prolog)": {"doctor": "د. أحمد", "students": 50},
@@ -238,3 +307,4 @@ with tab3:
                 st.download_button("💾 تصدير الجدول إلى Excel (CSV)", data=csv, file_name="AI_Schedule.csv", mime="text/csv")
             else:
                 st.error("❌ " + msg)
+
