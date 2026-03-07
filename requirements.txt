@@ -4,6 +4,3 @@ numpy
 matplotlib
 seaborn
 ortools
-random
-
-
