@@ -4,6 +4,6 @@ numpy
 matplotlib
 seaborn
 ortools
-tkinter
 random
+
 
