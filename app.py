@@ -252,9 +252,19 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
                                     "المكان":        r,
                                     "الطلاب":        task["عدد الطلاب"],
                                 })
+        try:
+            raw_obj = solver.objective_value()
+            # الـ penalties فقط هي الجزء الموجب من دالة الهدف
+            # نحسبها يدوياً من عدد الـ soft constraints المنتهَكة
+            actual_penalties = sum(
+                solver.value(v) for v in soft_penalty_vars
+            )
+        except Exception:
+            actual_penalties = 0
+
         return (
             pd.DataFrame(schedule),
-            max(0, int(solver.objective_value())),
+            actual_penalties,
             "نجاح التوليد!",
         )
     else:
