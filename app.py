@@ -2,9 +2,7 @@ import streamlit as st
 import pandas as pd
 from ortools.sat.python import cp_model
 
-# ==========================================
-# 1. إعدادات الواجهة والتصميم (UI & CSS)
-# ==========================================
+# --- UI Config ---
 st.set_page_config(page_title="Nexus AI Scheduler", page_icon="⚡", layout="wide")
 
 st.markdown("""
@@ -37,9 +35,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# 2. إدارة حالة التطبيق (State Management)
-# ==========================================
+# --- Session State Defaults ---
 if 'rooms' not in st.session_state:
     st.session_state.rooms = pd.DataFrame({
         "اسم المكان": ["مدرج أ", "معمل 1"],
@@ -66,20 +62,9 @@ if 'nlp_constraints' not in st.session_state:
 DAYS  = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس"]
 TIMES = ["08:00 AM", "10:00 AM", "12:00 PM", "02:00 PM"]
 
-# ==========================================
-# 3. محرك الذكاء الاصطناعي (OR-Tools Engine)  ← النسخة المُحسَّنة
-# ==========================================
+
+# --- CSP Scheduling Engine ---
 def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
-    """
-    Optimal OR-Tools CP-SAT Scheduler
-    ===================================
-    التحسينات على النسخة الأصلية:
-    1. إصلاح Bug قيد تعارض الأشخاص (كان يُعاد بناؤه خطأً داخل الحلقة)
-    2. Symmetry Breaking لتسريع البحث
-    3. Spread Bonus: تعظيم التباعد بين جلسات نفس المادة
-    4. دالة هدف مركّبة (penalties + spread)
-    5. Parallel Solver + Presolve + LP linearization
-    """
 
     model = cp_model.CpModel()
 
@@ -90,9 +75,9 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
     n_times = len(TIMES)
     rooms   = list(rooms_dict.keys())
 
-    # ── إنشاء متغيرات القرار ────────────────────────────────────────────────
-    x        = {}   # x[t_idx, s_idx, room, d_idx, t_slot]
-    task_day = {}   # task_day[t_idx, d_idx]
+    # Decision variables: x = 1 if task t, session s is scheduled in room r on day d at time slot
+    x        = {}
+    task_day = {}  # task_day = 1 if task t has any session on day d
 
     for t_idx, task in enumerate(tasks_list):
         n_sessions = task["عدد المرات أسبوعياً"]
@@ -106,12 +91,12 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
         for d_idx in range(n_days):
             task_day[(t_idx, d_idx)] = model.new_bool_var(f"td_{t_idx}_{d_idx}")
 
-    # ── القيود الصارمة (Hard Constraints) ───────────────────────────────────
+    # --- Hard Constraints ---
 
     for t_idx, task in enumerate(tasks_list):
         n_sessions = task["عدد المرات أسبوعياً"]
 
-        # H1: كل جلسة تُعطى مرة واحدة بالضبط
+        # H1: each session must be scheduled exactly once
         for s_idx in range(n_sessions):
             model.add_exactly_one(
                 x[(t_idx, s_idx, r, d_idx, t_slot)]
@@ -120,7 +105,7 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
                 for t_slot in TIMES
             )
 
-        # H2: ربط task_day بالمتغير الأساسي
+        # H2: link task_day to x variables
         for d_idx in range(n_days):
             sessions_on_day = [
                 x[(t_idx, s_idx, r, d_idx, t_slot)]
@@ -130,14 +115,14 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
             ]
             model.add_max_equality(task_day[(t_idx, d_idx)], sessions_on_day)
 
-        # H3: منع اليومين المتتاليين (No Consecutive Days)
+        # H3: no consecutive days for the same task
         if n_sessions > 1:
             for d_idx in range(n_days - 1):
                 model.add(
                     task_day[(t_idx, d_idx)] + task_day[(t_idx, d_idx + 1)] <= 1
                 )
 
-        # H4: الغرفة يجب أن تستوعب الطلاب
+        # H4: room capacity must fit number of students
         for r, r_data in rooms_dict.items():
             if task["عدد الطلاب"] > r_data["السعة القصوى"]:
                 for s_idx in range(n_sessions):
@@ -145,7 +130,7 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
                         for t_slot in TIMES:
                             model.add(x[(t_idx, s_idx, r, d_idx, t_slot)] == 0)
 
-    # H5: لا تعارض في القاعات
+    # H5: no room conflict (one class per room per timeslot)
     for r in rooms:
         for d_idx in range(n_days):
             for t_slot in TIMES:
@@ -155,9 +140,8 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
                     for s_idx in range(task["عدد المرات أسبوعياً"])
                 )
 
-    # H6: لا تعارض للأشخاص — إصلاح الـ Bug الأصلي
-    # ⚠️ القديم: person_tasks كان يُبنى داخل حلقة d_idx/t_slot → خطأ
-    # ✅ الجديد: نبنيه مرة واحدة برّا الحلقات
+    # H6: no person conflict (one task per person per timeslot)
+    # build map once outside loops to avoid re-creating it each iteration (bug fix)
     person_to_tasks = {}
     for t_idx, task in enumerate(tasks_list):
         person_to_tasks.setdefault(task["المسؤول"], []).append(t_idx)
@@ -172,7 +156,7 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
                     for r in rooms
                 )
 
-    # ── Symmetry Breaking (تسريع الحل) ──────────────────────────────────────
+    # Symmetry breaking: force session 0 before session 1 in time to cut search space in half
     for t_idx, task in enumerate(tasks_list):
         n_sessions = task["عدد المرات أسبوعياً"]
         if n_sessions < 2:
@@ -190,8 +174,9 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
                 sum(v * t for v, t in time_index_s1)
             )
 
-    # ── دالة الهدف المركّبة ──────────────────────────────────────────────────
-    # Soft penalties
+    # --- Objective Function (Soft Constraints) ---
+
+    # penalty: instructor scheduled on their requested day off
     soft_penalty_vars = []
     for constraint in soft_constraints:
         if constraint["type"] == "day_off":
@@ -204,7 +189,7 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
                             for t_slot in TIMES:
                                 soft_penalty_vars.append(x[(t_idx, s_idx, r, day_idx, t_slot)])
 
-    # Spread bonus — مكافأة الفجوة ≥ يومين بين جلسات نفس المادة
+    # bonus: reward sessions of the same task spread >= 2 days apart
     spread_bonus_vars = []
     for t_idx, task in enumerate(tasks_list):
         if task["عدد المرات أسبوعياً"] < 2:
@@ -220,12 +205,13 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
     PENALTY_WEIGHT = 10
     SPREAD_WEIGHT  = 2
 
+    # minimize penalties, maximize spread
     model.minimize(
         PENALTY_WEIGHT * sum(soft_penalty_vars)
         - SPREAD_WEIGHT * sum(spread_bonus_vars)
     )
 
-    # ── إعدادات الـ Solver ───────────────────────────────────────────────────
+    # --- Solver Settings ---
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = 20.0
     solver.parameters.num_search_workers  = 4
@@ -235,7 +221,7 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
 
     status = solver.solve(model)
 
-    # ── استخراج النتائج ──────────────────────────────────────────────────────
+    # --- Extract Results ---
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         schedule = []
         for t_idx, task in enumerate(tasks_list):
@@ -252,28 +238,19 @@ def generate_dynamic_schedule(rooms_df, tasks_df, soft_constraints):
                                     "المكان":        r,
                                     "الطلاب":        task["عدد الطلاب"],
                                 })
+
+        # count violated soft constraints directly (objective can be negative due to spread bonus)
         try:
-            raw_obj = solver.objective_value()
-            # الـ penalties فقط هي الجزء الموجب من دالة الهدف
-            # نحسبها يدوياً من عدد الـ soft constraints المنتهَكة
-            actual_penalties = sum(
-                solver.value(v) for v in soft_penalty_vars
-            )
+            actual_penalties = sum(solver.value(v) for v in soft_penalty_vars)
         except Exception:
             actual_penalties = 0
 
-        return (
-            pd.DataFrame(schedule),
-            actual_penalties,
-            "نجاح التوليد!",
-        )
+        return pd.DataFrame(schedule), actual_penalties, "نجاح التوليد!"
     else:
         return None, 0, "مستحيل إيجاد حل! القيود متضاربة جداً."
 
 
-# ==========================================
-# 4. تخطيط الواجهة (Dashboard Layout)
-# ==========================================
+# --- Dashboard Layout ---
 st.title("⚡ Nexus AI | Multi-Domain Smart Scheduler")
 st.caption("أقوى محرك جدولة ديناميكي يعتمد على القيود الصارمة والمرنة.")
 
